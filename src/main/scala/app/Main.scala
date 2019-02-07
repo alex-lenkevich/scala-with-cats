@@ -1,67 +1,25 @@
 package app
 
 import cats.data.{EitherT, StateT}
-import cats.implicits._
 import cats.mtl.MonadState
 import cats.{Monad, MonadError}
 import monix.eval.Task
 import monix.execution.Scheduler
-import mtl._
-import cats.mtl.implicits._
 import app.Config._
+import app.Main._
+import cats.syntax.all._
+import cats.instances.tuple._
 
-object Main {
-  type ErrorHandler[F[_]] = MonadError[F, Error]
+import scala.language.higherKinds
 
-  def cityByName[F[_] : ErrorHandler](cityName: String): F[City] =
-    cityName match {
-      case "Wroclaw" => City(cityName).pure[F]
-      case "Cadiz" => City(cityName).pure[F]
-      case _ => implicitly[ErrorHandler[F]].raiseError(UnknownCity(cityName))
-    }
+object Main extends Program {
 
-  type RequestsState[F[_]] = MonadState[F, Requests]
-
-  def hottestCity[F[_] : RequestsState]: F[(City, Temperature)] = {
-    implicitly[RequestsState[F]].inspect(reqs =>
-      Requests.hottest(reqs).map(_.temperature)
-    )
-  }
-
-  def askCity[F[_] : Console : Monad]: F[String] =
-    for {
-      _ <- Console[F].printLn("What is the next city?")
-      cityName <- Console[F].readLn
-    } yield cityName
-
-  def fetchForecast[F[_] : Weather : RequestsState : Monad](city: City): F[Forecast] =
-    for {
-      maybeForecast <- implicitly[RequestsState[F]].inspect(_.get(city))
-      forecast <- maybeForecast.fold(Weather[F].forecast(city))(
-        _.pure[F]
-      )
-      _ <- implicitly[RequestsState[F]].modify(_ + (city -> forecast))
-    } yield forecast
-
-  def askFetchJudge[F[_] : Console : Weather : RequestsState : ErrorHandler]: F[Unit] =
-    for {
-      cityName <- askCity[F]
-      city <- cityByName[F](cityName)
-      forecast <- fetchForecast[F](city)
-      _ <- Console[F].printLn(s"Forecast for $city is ${forecast.temperature}")
-      hottest <- hottestCity[F]
-      _ <- Console[F].printLn(s"Hottest city found so far is $hottest")
-    } yield ()
-
-  def program[F[_] : ConfigAsk : Console : Weather : RequestsState : ErrorHandler]: F[Unit] =
-    for {
-      h <- host[F]
-      p <- port[F]
-      _ <- Console[F].printLn(s"Using weather service at http://$h:$p")
-      _ <- askFetchJudge[F].foreverM[Unit]
-    } yield ()
+  import mtl._
+  import cats.implicits._
+  import cats.mtl.implicits._
 
   def main(args: Array[String]): Unit = {
+
     val config = Config("localhost", 8080)
     val requests = Requests.empty
 
@@ -83,4 +41,61 @@ object Main {
         ().pure[Task]
     }).runSyncUnsafe()
   }
+}
+
+trait Program extends Effects {
+
+  def cityByName[F[_] : ErrorHandler](cityName: String): F[City] =
+    cityName match {
+      case "Wroclaw" => City(cityName).pure
+      case "Cadiz" => City(cityName).pure
+      case _ => UnknownCity(cityName).raiseError
+    }
+
+  def hottestCity[F[_] : RequestsState]: F[(City, Temperature)] =
+    requestState.inspect(reqs =>
+      Requests.hottest(reqs).map(_.temperature)
+    )
+
+
+  def askCity[F[_] : Console : Monad]: F[String] =
+    for {
+      _ <- console.printLn("What is the next city?")
+      cityName <- console.readLn
+    } yield cityName
+
+  def fetchForecast[F[_] : Weather : RequestsState : Monad](city: City)(implicit state: RequestsState[F]): F[Forecast] =
+    for {
+      maybeForecast <- state.inspect(_.get(city))
+      forecast <- maybeForecast.fold(weather.forecast(city))(_.pure)
+      _ <- state.modify(_ + (city -> forecast))
+    } yield forecast
+
+  def askFetchJudge[F[_] : Console : Weather : RequestsState : ErrorHandler]: F[Unit] =
+    for {
+      cityName <- askCity
+      city <- cityByName(cityName)
+      forecast <- fetchForecast(city)
+      _ <- console.printLn(s"Forecast for $city is ${forecast.temperature}")
+      hottest <- hottestCity
+      _ <- console.printLn(s"Hottest city found so far is $hottest")
+    } yield ()
+
+  def program[F[_] : ConfigAsk : Console : Weather : RequestsState : ErrorHandler]: F[Unit] =
+    for {
+      h <- host
+      p <- port
+      _ <- console.printLn(s"Using weather service at http://$h:$p")
+      _ <- askFetchJudge.foreverM[Unit]
+    } yield ()
+}
+
+trait Effects {
+
+  type ErrorHandler[F[_]] = MonadError[F, Error]
+  type RequestsState[F[_]] = MonadState[F, Requests]
+
+  def requestState[F[_]](implicit requestsState: RequestsState[F]) = requestsState
+  def console[F[_]](implicit console: Console[F]) = console
+  def weather[F[_]](implicit weather: Weather[F]) = weather
 }
