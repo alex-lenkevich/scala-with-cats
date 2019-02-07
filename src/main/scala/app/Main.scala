@@ -17,7 +17,6 @@ object Main extends Program {
   import mtl._
   import cats.implicits._
   import cats.mtl.implicits._
-import app.Config._
 
   def main(args: Array[String]): Unit = {
 
